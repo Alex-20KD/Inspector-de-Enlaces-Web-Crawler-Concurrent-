@@ -70,8 +70,37 @@ import (
 // El Timeout del http.Client (10s) sigue siendo útil como timeout
 // POR REQUEST. El context es un timeout GLOBAL para todo el programa.
 // El que expire primero "gana" y cancela la petición.
+// CheckURL hace una petición HTTP HEAD a la URL dada y retorna
+// el código de estado HTTP o un error, aplicando reintentos con backoff exponencial.
+//
+// Requisitos de reintento:
+//   1. Intentar la petición hasta un máximo de 3 veces (o 3 reintentos).
+//   2. Esperar entre intentos usando backoff exponencial:
+//      - Intento 1 fallado: esperar 500ms
+//      - Intento 2 fallado: esperar 1s
+//      - (duplicando el tiempo de espera en cada paso)
+//   3. Solo reintentar si el error es temporal (ej: error de red o códigos HTTP 429/503).
+//      Si te da 404 o 200, NO reintentar.
+//   4. ¡El delay debe ser sensible al contexto!
+//      No uses time.Sleep(delay). Si el contexto global expira mientras estás
+//      durmiendo entre reintentos, el sleep común mantendrá la goroutine bloqueada.
+//      Usa una sentencia select con time.After y ctx.Done() para abortar inmediatamente.
+//
+// Pista de select sensible al contexto para esperar:
+//     select {
+//     case <-ctx.Done():
+//         return 0, ctx.Err()
+//     case <-time.After(delay):
+//         // continuar al siguiente reintento
+//     }
 func CheckURL(ctx context.Context, rawURL string) (int, error) {
-	// TODO: modifica tu código aquí para usar ctx
+	// TODO: implementa los reintentos con backoff aquí.
+	// Pistas:
+	// - Usa un bucle for de intentos (ej: para retries := 0; retries < 3; retries++)
+	// - Recuerda cerrar el response body en CADA intento exitoso para no fugar memoria
+	// - Si una petición sale bien (y no es 429/503), retorna inmediatamente
+	// - Si falla, calcula el delay (ej: delay = 500ms * 2^retries) y espéralo de forma sensible al contexto
+
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -141,13 +170,36 @@ type Result struct {
 //   - for url := range jobs { ... } itera sobre un channel
 //   - defer se ejecuta al SALIR de la función
 //
-// NUEVA FIRMA: ctx se agrega como primer parámetro.
-// El worker debe pasar ctx a CheckURL.
-func Worker(ctx context.Context, id int, jobs <-chan string, results chan<- Result, wg *sync.WaitGroup) {
-	// TODO: tu código aquí
+// NUEVA FIRMA: se agrega 'sem' — un channel que actúa como semáforo.
+//
+// sem es un chan struct{} con buffer de tamaño maxConcurrent.
+// Antes de llamar a CheckURL, debes ADQUIRIR un slot:
+//
+//	sem <- struct{}{}
+//
+// Después de que CheckURL retorne, debes LIBERAR el slot:
+//
+//	<-sem
+//
+// ⚠️  NO uses defer para el release aquí. ¿Por qué?
+//
+//	defer se ejecuta al SALIR DE LA FUNCIÓN (Worker), no al
+//	final de cada iteración del for. Si usas defer, el slot
+//	se libera cuando el Worker termine TODAS sus URLs, no
+//	después de cada una. Eso anula el propósito del semáforo.
+//
+// El tipo chan struct{} (channel de structs vacíos) se usa porque:
+//   - struct{} ocupa 0 bytes de memoria
+//   - Solo nos importa la CANTIDAD de items en el buffer, no su valor
+//   - Es la convención Go para señales sin datos
+func Worker(ctx context.Context, id int, jobs <-chan string, results chan<- Result, wg *sync.WaitGroup, sem chan struct{}) {
 	defer wg.Done()
 	for URL := range jobs {
+		// TODO: adquirir semáforo AQUÍ (antes de CheckURL)
+		sem <- struct{}{}
 		code, err := CheckURL(ctx, URL)
+		// TODO: liberar semáforo AQUÍ (después de CheckURL)
+		<-sem
 		instancia := Result{
 			URL:        URL,
 			StatusCode: code,
@@ -155,7 +207,6 @@ func Worker(ctx context.Context, id int, jobs <-chan string, results chan<- Resu
 		}
 		results <- instancia
 	}
-
 }
 
 // RunWorkers orquesta todo el proceso concurrente.
@@ -200,17 +251,20 @@ func Worker(ctx context.Context, id int, jobs <-chan string, results chan<- Resu
 //   - close(channel) para cerrar un channel
 //   - for result := range results { ... } para leer hasta que se cierre
 //
-// NUEVA FIRMA: ctx se agrega como primer parámetro.
-// RunWorkers debe pasar ctx a cada Worker que lance.
-func RunWorkers(ctx context.Context, urls []string, numWorkers int) []Result {
-	// TODO: tu código aquí
+// NUEVA FIRMA: se agrega maxConcurrent para crear el semáforo.
+// Debes:
+//  1. Crear el semáforo: sem := make(chan struct{}, maxConcurrent)
+//  2. Pasarlo a cada Worker
+func RunWorkers(ctx context.Context, urls []string, numWorkers int, maxConcurrent int) []Result {
+	sem := make(chan struct{}, maxConcurrent)
 	jobs := make(chan string, len(urls))
 	results := make(chan Result, len(urls))
 	var wg sync.WaitGroup
+	// TODO: crear el semáforo aquí
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go Worker(ctx, i, jobs, results, &wg)
+		go Worker(ctx, i, jobs, results, &wg, sem) // TODO: pasar sem aquí
 
 	}
 	for _, url := range urls {

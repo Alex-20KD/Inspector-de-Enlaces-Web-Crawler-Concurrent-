@@ -44,6 +44,8 @@ func main() {
 	numWorkers := flag.Int("workers", 10, "Número de workers concurrentes")
 	// Nuevo flag para el timeout global del contexto.
 	timeoutSecs := flag.Int("timeout", 30, "Timeout global en segundos")
+	// Nuevo flag para limitar peticiones HTTP simultáneas (semáforo).
+	maxConcurrent := flag.Int("max-concurrent", 5, "Máximo de peticiones HTTP simultáneas")
 
 	// flag.Parse() lee os.Args y rellena las variables de arriba.
 	// DEBE llamarse después de definir todos los flags y ANTES de usarlos.
@@ -105,12 +107,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutSecs)*time.Second)
 	defer cancel()
 
-	fmt.Printf("%s⚡ Verificando con %d workers (timeout global: %ds)...%s\n\n",
-		colorCyan, *numWorkers, *timeoutSecs, colorReset)
+	fmt.Printf("%s⚡ Verificando con %d workers, max %d conexiones simultáneas (timeout: %ds)...%s\n\n",
+		colorCyan, *numWorkers, *maxConcurrent, *timeoutSecs, colorReset)
 	startCheck := time.Now()
 
-	// Ahora pasamos ctx a RunWorkers para que se propague a cada petición HTTP.
-	results := crawler.RunWorkers(ctx, links, *numWorkers)
+	// Pasamos ctx Y maxConcurrent a RunWorkers.
+	results := crawler.RunWorkers(ctx, links, *numWorkers, *maxConcurrent)
 
 	elapsed := time.Since(startCheck).Round(time.Millisecond)
 
