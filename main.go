@@ -9,6 +9,7 @@ import (
 
 func main() {
 	testURL := "https://go.dev"
+	numWorkers := 5
 
 	// Fase 1: Obtener el HTML
 	fmt.Printf("🔍 Obteniendo HTML de: %s\n", testURL)
@@ -19,32 +20,35 @@ func main() {
 	}
 	fmt.Printf("✅ Recibidos %d bytes de HTML\n\n", len(body))
 
-	// Fase 2: Extraer los enlaces
+	// Fase 2: Extraer enlaces
 	fmt.Println("🔗 Extrayendo enlaces...")
 	links, err := crawler.ExtractLinks(body, testURL)
 	if err != nil {
 		fmt.Printf("❌ Error extrayendo enlaces: %v\n", err)
 		os.Exit(1)
 	}
-
 	fmt.Printf("✅ Encontrados %d enlaces\n\n", len(links))
 
-	// Mostramos los primeros 15 enlaces para no llenar la pantalla.
-	// math.Min no existe para ints en Go (solo float64), así que
-	// usamos un if simple. Esto es una peculiaridad de Go que
-	// cambió en versiones recientes con generics, pero el if es claro.
-	limit := 15
+	// Fase 3+4: Verificar enlaces concurrentemente
+	// Limitamos a los primeros 20 enlaces para la prueba (no queremos
+	// esperar 148 peticiones HTTP en un test rápido).
+	limit := 20
 	if len(links) < limit {
 		limit = len(links)
 	}
+	testLinks := links[:limit]
 
-	fmt.Println("--- Primeros enlaces encontrados ---")
-	for i, link := range links[:limit] {
-		// %2d formatea el número con 2 dígitos de ancho (alineación)
-		fmt.Printf("  %2d. %s\n", i+1, link)
-	}
+	fmt.Printf("⚡ Verificando %d enlaces con %d workers...\n\n", len(testLinks), numWorkers)
+	results := crawler.RunWorkers(testLinks, numWorkers)
 
-	if len(links) > limit {
-		fmt.Printf("  ... y %d más\n", len(links)-limit)
+	// Mostrar resultados
+	for _, r := range results {
+		if r.Err != nil {
+			fmt.Printf("  ❌ ERROR  %s\n           → %v\n", r.URL, r.Err)
+		} else if r.StatusCode >= 400 {
+			fmt.Printf("  ⚠️  %d   %s\n", r.StatusCode, r.URL)
+		} else {
+			fmt.Printf("  ✅ %d   %s\n", r.StatusCode, r.URL)
+		}
 	}
 }

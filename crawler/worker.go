@@ -1,8 +1,63 @@
 package crawler
 
 import (
+	"fmt"
+	"net/http"
 	"sync"
+	"time"
 )
+
+// CheckURL hace una petición HTTP HEAD a la URL dada y retorna
+// el código de estado HTTP o un error.
+//
+// Parámetros:
+//   - rawURL: la URL a verificar (ej: "https://go.dev/doc")
+//
+// Retorna:
+//   - int:   el código HTTP (200, 301, 404, 500, etc.)
+//   - error: si hubo un problema de conexión (timeout, DNS, etc.)
+//     Si la petición fue exitosa (aunque sea 404), error es nil.
+//     Un 404 NO es un error de conexión — es una respuesta válida.
+//
+// Comportamiento esperado:
+//
+//  1. Crear un http.Client con un Timeout (ej: 10 segundos).
+//     ¿Por qué? Porque sin timeout, si un servidor no responde,
+//     tu goroutine se queda bloqueada PARA SIEMPRE.
+//
+//  2. Hacer una petición HEAD con client.Head(rawURL).
+//     HEAD es como GET pero solo devuelve headers, sin body.
+//     Más rápido para solo verificar si un enlace vive.
+//
+//  3. Si la petición retorna error, devolver (0, error).
+//     Usa fmt.Errorf con %w para envolver el error, igual que en FetchURL.
+//
+//  4. Si la petición fue exitosa, CERRAR el Body con resp.Body.Close().
+//     Sí, incluso en HEAD — el Body existe, solo que está vacío.
+//     Si no lo cierras, Go mantiene la conexión TCP abierta →
+//     con 148 URLs, se te acaban las conexiones del sistema.
+//     PISTA: ¿recuerdas defer?
+//
+//  5. Retornar (resp.StatusCode, nil).
+//
+// Pistas:
+//   - &http.Client{Timeout: 10 * time.Second}
+//   - client.Head(url) retorna (*http.Response, error)
+//   - resp.StatusCode es un int con el código HTTP
+//   - defer resp.Body.Close() para liberar la conexión
+//   - fmt.Errorf("mensaje: %w", err) para envolver errores
+func CheckURL(rawURL string) (int, error) {
+	// TODO: tu código aquí
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Head(rawURL)
+	if err != nil {
+		return 0, fmt.Errorf("error al verificar la URL: %w", err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, nil
+}
 
 // Result almacena el resultado de verificar un enlace.
 // Es un struct — un contenedor de datos con campos nombrados.
@@ -61,9 +116,11 @@ func Worker(id int, jobs <-chan string, results chan<- Result, wg *sync.WaitGrou
 	// TODO: tu código aquí
 	defer wg.Done()
 	for URL := range jobs {
+		code, err := CheckURL(URL)
 		instancia := Result{
 			URL:        URL,
-			StatusCode: 0,
+			StatusCode: code,
+			Err:        err,
 		}
 		results <- instancia
 	}
