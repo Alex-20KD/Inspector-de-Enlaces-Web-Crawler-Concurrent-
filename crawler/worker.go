@@ -47,23 +47,25 @@ import (
 //   - resp.StatusCode es un int con el código HTTP
 //   - defer resp.Body.Close() para liberar la conexión
 //   - fmt.Errorf("mensaje: %w", err) para envolver errores
+//
 // NUEVA FIRMA: ctx es el primer parámetro (convención de Go).
 // En Go, context.Context SIEMPRE va como primer parámetro, SIEMPRE
 // se llama "ctx", y NUNCA se guarda en un struct. Es una convención
 // tan fuerte que los linters la verifican.
 //
 // Cambios que necesitas hacer:
-//   1. En vez de client.Head(rawURL), crea un request con contexto:
-//          req, err := http.NewRequestWithContext(ctx, "HEAD", rawURL, nil)
-//      ("HEAD" es el método HTTP, nil es el body — HEAD no tiene body)
 //
-//   2. Ejecuta el request con:
-//          resp, err := client.Do(req)
-//      client.Do() acepta cualquier *http.Request, incluyendo los
-//      que tienen contexto. Si el contexto se cancela, Do() retorna
-//      error inmediatamente.
+//  1. En vez de client.Head(rawURL), crea un request con contexto:
+//     req, err := http.NewRequestWithContext(ctx, "HEAD", rawURL, nil)
+//     ("HEAD" es el método HTTP, nil es el body — HEAD no tiene body)
 //
-//   3. Maneja los errores de crear el request Y de ejecutarlo.
+//  2. Ejecuta el request con:
+//     resp, err := client.Do(req)
+//     client.Do() acepta cualquier *http.Request, incluyendo los
+//     que tienen contexto. Si el contexto se cancela, Do() retorna
+//     error inmediatamente.
+//
+//  3. Maneja los errores de crear el request Y de ejecutarlo.
 //
 // El Timeout del http.Client (10s) sigue siendo útil como timeout
 // POR REQUEST. El context es un timeout GLOBAL para todo el programa.
@@ -73,9 +75,13 @@ func CheckURL(ctx context.Context, rawURL string) (int, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
-	resp, err := client.Head(rawURL)
+	req, err := http.NewRequestWithContext(ctx, "HEAD", rawURL, nil)
 	if err != nil {
-		return 0, fmt.Errorf("error al verificar la URL: %w", err)
+		return 0, fmt.Errorf("error al crear la petición: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("error al hacer petición: %w", err)
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode, nil
@@ -134,13 +140,14 @@ type Result struct {
 //   - sync.WaitGroup: wg.Done() decrementa el contador
 //   - for url := range jobs { ... } itera sobre un channel
 //   - defer se ejecuta al SALIR de la función
+//
 // NUEVA FIRMA: ctx se agrega como primer parámetro.
 // El worker debe pasar ctx a CheckURL.
 func Worker(ctx context.Context, id int, jobs <-chan string, results chan<- Result, wg *sync.WaitGroup) {
 	// TODO: tu código aquí
 	defer wg.Done()
 	for URL := range jobs {
-		code, err := CheckURL(URL)
+		code, err := CheckURL(ctx, URL)
 		instancia := Result{
 			URL:        URL,
 			StatusCode: code,
@@ -192,6 +199,7 @@ func Worker(ctx context.Context, id int, jobs <-chan string, results chan<- Resu
 //   - go func() { ... }() para lanzar goroutines
 //   - close(channel) para cerrar un channel
 //   - for result := range results { ... } para leer hasta que se cierre
+//
 // NUEVA FIRMA: ctx se agrega como primer parámetro.
 // RunWorkers debe pasar ctx a cada Worker que lance.
 func RunWorkers(ctx context.Context, urls []string, numWorkers int) []Result {
@@ -202,7 +210,7 @@ func RunWorkers(ctx context.Context, urls []string, numWorkers int) []Result {
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go Worker(i, jobs, results, &wg)
+		go Worker(ctx, i, jobs, results, &wg)
 
 	}
 	for _, url := range urls {
