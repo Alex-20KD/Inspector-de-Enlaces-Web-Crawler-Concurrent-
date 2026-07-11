@@ -184,8 +184,10 @@ func RunWorkers(urls []string, numWorkers int) []Result {
 	}
 
 	close(jobs)
-	wg.Wait()
-	close(results)
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 	var FinalResults []Result
 	for res := range results {
 		FinalResults = append(FinalResults, res)
