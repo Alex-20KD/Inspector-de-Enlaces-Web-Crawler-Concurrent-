@@ -74,46 +74,64 @@ import (
 // el código de estado HTTP o un error, aplicando reintentos con backoff exponencial.
 //
 // Requisitos de reintento:
-//   1. Intentar la petición hasta un máximo de 3 veces (o 3 reintentos).
-//   2. Esperar entre intentos usando backoff exponencial:
-//      - Intento 1 fallado: esperar 500ms
-//      - Intento 2 fallado: esperar 1s
-//      - (duplicando el tiempo de espera en cada paso)
-//   3. Solo reintentar si el error es temporal (ej: error de red o códigos HTTP 429/503).
-//      Si te da 404 o 200, NO reintentar.
-//   4. ¡El delay debe ser sensible al contexto!
-//      No uses time.Sleep(delay). Si el contexto global expira mientras estás
-//      durmiendo entre reintentos, el sleep común mantendrá la goroutine bloqueada.
-//      Usa una sentencia select con time.After y ctx.Done() para abortar inmediatamente.
+//  1. Intentar la petición hasta un máximo de 3 veces (o 3 reintentos).
+//  2. Esperar entre intentos usando backoff exponencial:
+//     - Intento 1 fallado: esperar 500ms
+//     - Intento 2 fallado: esperar 1s
+//     - (duplicando el tiempo de espera en cada paso)
+//  3. Solo reintentar si el error es temporal (ej: error de red o códigos HTTP 429/503).
+//     Si te da 404 o 200, NO reintentar.
+//  4. ¡El delay debe ser sensible al contexto!
+//     No uses time.Sleep(delay). Si el contexto global expira mientras estás
+//     durmiendo entre reintentos, el sleep común mantendrá la goroutine bloqueada.
+//     Usa una sentencia select con time.After y ctx.Done() para abortar inmediatamente.
 //
 // Pista de select sensible al contexto para esperar:
-//     select {
-//     case <-ctx.Done():
-//         return 0, ctx.Err()
-//     case <-time.After(delay):
-//         // continuar al siguiente reintento
-//     }
+//
+//	select {
+//	case <-ctx.Done():
+//	    return 0, ctx.Err()
+//	case <-time.After(delay):
+//	    // continuar al siguiente reintento
+//	}
 func CheckURL(ctx context.Context, rawURL string) (int, error) {
-	// TODO: implementa los reintentos con backoff aquí.
-	// Pistas:
-	// - Usa un bucle for de intentos (ej: para retries := 0; retries < 3; retries++)
-	// - Recuerda cerrar el response body en CADA intento exitoso para no fugar memoria
-	// - Si una petición sale bien (y no es 429/503), retorna inmediatamente
-	// - Si falla, calcula el delay (ej: delay = 500ms * 2^retries) y espéralo de forma sensible al contexto
-
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
-	req, err := http.NewRequestWithContext(ctx, "HEAD", rawURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("error al crear la petición: %w", err)
+
+	var lastErr error
+	delay := 500 * time.Millisecond
+	maxIntentos := 3
+
+	for intento := 1; intento <= maxIntentos; intento++ {
+		req, err := http.NewRequestWithContext(ctx, "HEAD", rawURL, nil)
+		if err != nil {
+			return 0, fmt.Errorf("error al crear la petición: %w", err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("intento %d falló: %w", intento, err)
+		} else {
+			if resp.StatusCode == 429 || resp.StatusCode == 503 {
+				lastErr = fmt.Errorf("intento %d dio estado temporal: %d", intento, resp.StatusCode)
+				resp.Body.Close()
+			} else {
+				resp.Body.Close()
+				return resp.StatusCode, nil
+			}
+		}
+
+		if intento < maxIntentos {
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(delay):
+				delay *= 2
+			}
+		}
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("error al hacer petición: %w", err)
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode, nil
+	return 0, lastErr
 }
 
 // Result almacena el resultado de verificar un enlace.
