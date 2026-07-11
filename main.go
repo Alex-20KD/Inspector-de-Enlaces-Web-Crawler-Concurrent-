@@ -1,12 +1,13 @@
 package main
 
 import (
-	"flag" // Paquete de la stdlib para parsear argumentos de línea de comandos
+	"context" // Para crear contextos con timeout/cancelación
+	"flag"
 	"fmt"
 	"os"
-	"sort"    // Para ordenar slices
-	"strings" // Para manipulación de strings
-	"time"    // Para medir duración
+	"sort"
+	"strings"
+	"time"
 
 	"link-inspector/crawler"
 )
@@ -41,6 +42,8 @@ func main() {
 	// Cada flag se define con: (nombre, valor_por_defecto, descripción)
 	targetURL := flag.String("url", "", "URL a inspeccionar (requerida)")
 	numWorkers := flag.Int("workers", 10, "Número de workers concurrentes")
+	// Nuevo flag para el timeout global del contexto.
+	timeoutSecs := flag.Int("timeout", 30, "Timeout global en segundos")
 
 	// flag.Parse() lee os.Args y rellena las variables de arriba.
 	// DEBE llamarse después de definir todos los flags y ANTES de usarlos.
@@ -94,11 +97,20 @@ func main() {
 		return
 	}
 
-	// ===== FASE 3-5: VERIFICAR CONCURRENTEMENTE =====
-	fmt.Printf("%s⚡ Verificando con %d workers...%s\n\n", colorCyan, *numWorkers, colorReset)
+	// ===== CREAR CONTEXTO CON TIMEOUT =====
+	// context.WithTimeout crea un contexto hijo de Background() que se
+	// cancela automáticamente después de la duración especificada.
+	// Retorna (ctx, cancel). SIEMPRE haz defer cancel() para liberar
+	// el timer interno — si no, es un memory leak.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutSecs)*time.Second)
+	defer cancel()
+
+	fmt.Printf("%s⚡ Verificando con %d workers (timeout global: %ds)...%s\n\n",
+		colorCyan, *numWorkers, *timeoutSecs, colorReset)
 	startCheck := time.Now()
 
-	results := crawler.RunWorkers(links, *numWorkers)
+	// Ahora pasamos ctx a RunWorkers para que se propague a cada petición HTTP.
+	results := crawler.RunWorkers(ctx, links, *numWorkers)
 
 	elapsed := time.Since(startCheck).Round(time.Millisecond)
 
